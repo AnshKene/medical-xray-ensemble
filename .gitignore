@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual env
+myenv/
+venv/
+
+# Data & outputs
+data/
+outputs/
+models/
+
+# VS Code junk
+.vscode/
+tempCodeRunnerFile.py
+
+# OS files
+.DS_Store
