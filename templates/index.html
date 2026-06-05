@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ensemble X-Ray AI — Medical Diagnosis</title>
+  <meta name="description" content="Upload a chest X-ray and let the 4-model ensemble AI (ResNet, MobileNet, EfficientNet, DenseNet) classify it with Grad-CAM explainability." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+  <!-- ── Animated background ──────────────────────────────────────────── -->
+  <div class="bg-orbs" aria-hidden="true">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+  </div>
+
+  <!-- ── Header ────────────────────────────────────────────────────────── -->
+  <header class="site-header">
+    <div class="header-inner">
+      <div class="logo-lockup">
+        <div class="logo-icon" aria-hidden="true">
+          <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect width="40" height="40" rx="10" fill="url(#grad-logo)"/>
+            <path d="M8 20h4l3-8 4 16 3-12 3 6 3-4h4" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+            <defs>
+              <linearGradient id="grad-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#6366f1"/>
+                <stop offset="1" stop-color="#06b6d4"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+        <div>
+          <h1 class="site-title">Ensemble X-Ray <span class="badge-ai">AI</span></h1>
+          <p class="site-subtitle">4-Model Medical Diagnosis · Grad-CAM Explainability</p>
+        </div>
+      </div>
+      <div id="status-pill" class="status-pill status-loading" role="status" aria-live="polite">
+        <span class="status-dot"></span>
+        <span class="status-text">Checking models…</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Main content ───────────────────────────────────────────────────── -->
+  <main class="main-container">
+
+    <!-- Upload section -->
+    <section class="upload-section" aria-labelledby="upload-heading">
+      <h2 id="upload-heading" class="section-heading">Upload Chest X-Ray</h2>
+      <p class="section-sub">Drag & drop a PNG or JPEG image, or click to browse</p>
+
+      <div id="drop-zone" class="drop-zone" role="button" tabindex="0"
+           aria-label="Drag and drop zone for X-ray image upload"
+           aria-describedby="upload-heading">
+        <input type="file" id="file-input" accept="image/png,image/jpeg,image/bmp,image/webp"
+               class="file-input-hidden" aria-label="Select X-ray image file" />
+
+        <div class="drop-idle" id="drop-idle-state">
+          <div class="drop-icon" aria-hidden="true">
+            <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="8" y="14" width="48" height="36" rx="6" stroke="currentColor" stroke-width="2.5" stroke-dasharray="6 4"/>
+              <path d="M32 36V24m0 0-6 6m6-6 6 6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M20 46h24" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.5"/>
+            </svg>
+          </div>
+          <p class="drop-primary">Drop your X-ray here</p>
+          <p class="drop-secondary">PNG, JPEG, BMP · up to 16 MB</p>
+          <button class="btn-browse" id="btn-browse" type="button">Browse Files</button>
+        </div>
+
+        <div class="drop-preview hidden" id="drop-preview-state">
+          <img id="preview-img" src="" alt="Selected X-ray preview" class="preview-image" />
+          <div class="preview-info">
+            <span id="preview-filename" class="preview-filename"></span>
+            <button class="btn-change" id="btn-change" type="button">Change Image</button>
+          </div>
+        </div>
+      </div>
+
+      <button class="btn-analyze" id="btn-analyze" type="button" disabled
+              aria-label="Run AI analysis on the uploaded X-ray">
+        <span class="btn-analyze-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M8 11h6m-3-3v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </span>
+        Analyze X-Ray
+      </button>
+    </section>
+
+    <!-- Loading overlay -->
+    <div id="loading-overlay" class="loading-overlay hidden" role="status" aria-label="Analyzing X-ray, please wait">
+      <div class="loading-card">
+        <div class="spinner-ring" aria-hidden="true">
+          <div class="spinner-segment"></div>
+        </div>
+        <p class="loading-title">Analyzing X-Ray</p>
+        <p class="loading-sub">Running ensemble inference across 4 models…</p>
+        <div class="loading-steps" aria-hidden="true">
+          <span class="step" id="step-1">ResNet-18</span>
+          <span class="step" id="step-2">MobileNet-V3</span>
+          <span class="step" id="step-3">EfficientNet-B0</span>
+          <span class="step" id="step-4">DenseNet-121</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Results section (hidden until first prediction) -->
+    <section id="results-section" class="results-section hidden" aria-label="Analysis results" aria-live="polite">
+
+      <!-- Prediction Hero -->
+      <div class="results-hero">
+        <div class="hero-image-wrap">
+          <img id="result-upload-img" src="" alt="Analyzed X-ray" class="hero-xray" />
+        </div>
+        <div class="hero-verdict">
+          <p class="verdict-label">Ensemble Prediction</p>
+          <div id="verdict-badge" class="verdict-badge"></div>
+          <div class="confidence-wrap">
+            <div class="confidence-header">
+              <span class="conf-label">Confidence</span>
+              <span id="conf-pct" class="conf-pct">—</span>
+            </div>
+            <div class="confidence-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="conf-bar-wrap">
+              <div id="conf-bar" class="confidence-fill"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Probability breakdown -->
+      <div class="card">
+        <h2 class="card-title">
+          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 17V7m4 10V3m4 14v-6m4 6V9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          Class Probabilities
+        </h2>
+        <div id="prob-bars" class="prob-bars"></div>
+      </div>
+
+      <!-- Two-column: model weights + device info -->
+      <div class="cards-row">
+        <div class="card">
+          <h2 class="card-title">
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.8"/><path d="M10 6v4l3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            Ensemble Weights
+          </h2>
+          <div id="weight-bars" class="prob-bars"></div>
+        </div>
+        <div class="card card-meta">
+          <h2 class="card-title">
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2" y="5" width="16" height="10" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M6 15v2m8-2v2M4 17h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            System Info
+          </h2>
+          <ul class="meta-list" id="meta-list"></ul>
+        </div>
+      </div>
+
+      <!-- Grad-CAM grid -->
+      <div class="card">
+        <h2 class="card-title">
+          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 2a8 8 0 1 0 0 16A8 8 0 0 0 10 2Zm0 0v8l5 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          Grad-CAM Attention Maps
+        </h2>
+        <p class="card-desc">Highlighted regions show which areas each model focused on for its decision.</p>
+        <div id="gradcam-grid" class="gradcam-grid"></div>
+      </div>
+
+    </section>
+
+    <!-- Error toast -->
+    <div id="error-toast" class="error-toast hidden" role="alert" aria-live="assertive">
+      <span class="toast-icon" aria-hidden="true">⚠</span>
+      <span id="error-msg" class="toast-msg"></span>
+      <button class="toast-close" id="toast-close" aria-label="Dismiss error">✕</button>
+    </div>
+
+  </main>
+
+  <!-- ── Footer ─────────────────────────────────────────────────────────── -->
+  <footer class="site-footer">
+    <p>Ensemble X-Ray AI · ResNet-18 · MobileNet-V3-Small · EfficientNet-B0 · DenseNet-121</p>
+    <p class="footer-note">⚠ For research purposes only — not a clinical diagnostic tool.</p>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

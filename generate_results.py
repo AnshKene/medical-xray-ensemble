@@ -1,48 +1,98 @@
-import torch
 import os
+import json
+import torch
 from torch.utils.data import DataLoader
+
 from utils.dataset import XRayDataset
 from utils.transforms import val_transform
 from utils.evaluate import evaluate
-from main import get_resnet, get_mobilenet, get_efficientnet
+
+from main import (
+    get_resnet,
+    get_mobilenet,
+    get_efficientnet,
+    get_densenet,
+)
+
+
+def load_model(model_fn, path, device):
+    model = model_fn().to(device)
+    model.load_state_dict(torch.load(path, map_location=device))
+    model.eval()
+    return model
+
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Loading saved models on: {device}")
+    print(f"Running on: {device}")
 
-    # 1. Load the Test Data
+    # -------------------------
+    # 1. Load Dataset
+    # -------------------------
     test_dataset = XRayDataset("data/test", val_transform)
-    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=4, pin_memory=True)
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=16,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=torch.cuda.is_available(),
+    )
+
     class_names = test_dataset.classes
 
-    # 2. Initialize and Load Trained Weights
-    # These must match your saved filenames exactly
+    print("Classes:", class_names)
+
+    # -------------------------
+    # 2. Load Models
+    # -------------------------
     model_paths = {
-        "resnet": "outputs/models/resnet.pth",
-        "mobilenet": "outputs/models/mobilenet.pth",
-        "efficientnet": "outputs/models/efficientnet.pth"
+        "resnet":       "outputs/models/resnet.pth",
+        "mobilenet":    "outputs/models/mobilenet.pth",
+        "efficientnet": "outputs/models/efficientnet.pth",
+        "densenet":     "outputs/models/densenet.pth",
     }
 
-    m1 = get_resnet().to(device)
-    m1.load_state_dict(torch.load(model_paths["resnet"], weights_only=True))
-    
-    m2 = get_mobilenet().to(device)
-    m2.load_state_dict(torch.load(model_paths["mobilenet"], weights_only=True))
-    
-    m3 = get_efficientnet().to(device)
-    m3.load_state_dict(torch.load(model_paths["efficientnet"], weights_only=True))
+    print("\nLoading trained models...")
 
-    models_list = [m1, m2, m3]
+    m1 = load_model(get_resnet,       model_paths["resnet"],       device)
+    m2 = load_model(get_mobilenet,    model_paths["mobilenet"],    device)
+    m3 = load_model(get_efficientnet, model_paths["efficientnet"], device)
+    m4 = load_model(get_densenet,     model_paths["densenet"],     device)
 
-    # 3. Use the weights from your successful run
-    # (Based on your last output: ResNet=0.336, MobileNet=0.331, EfficientNet=0.333)
-    weights = [0.336, 0.331, 0.333]
+    models_list = [m1, m2, m3, m4]
 
-    # 4. Generate the Visual Metrics
-    print("\nGenerating Confusion Matrix and Final Report...")
-    report, preds = evaluate(models_list, weights, test_loader, device, class_names)
+    # -------------------------
+    # 3. Ensemble Weights
+    # -------------------------
+    # Load weights saved by main.py, or fall back to equal weights
+    weights_path = "outputs/metrics/ensemble_weights.json"
+    if os.path.exists(weights_path):
+        with open(weights_path) as f:
+            w_dict = json.load(f)
+        weights = [w_dict[n] for n in ["resnet", "mobilenet", "efficientnet", "densenet"]]
+        print("\nLoaded ensemble weights:", weights)
+    else:
+        weights = [0.25, 0.25, 0.25, 0.25]
+        print("\nFallback equal weights (run main.py first to get computed weights)")
 
-    print("\nSUCCESS: Check 'outputs/metrics/confusion_matrix.png' for the visual results.")
+    # -------------------------
+    # 4. Evaluate Ensemble
+    # -------------------------
+    print("\nRunning evaluation on test set...")
+
+    report, preds = evaluate(
+        models_list,
+        weights,
+        test_loader,
+        device,
+        class_names
+    )
+
+    print("\nEvaluation complete.")
+    print("Check outputs/metrics for confusion matrix.")
+
+    return report
+
 
 if __name__ == "__main__":
     main()

@@ -1,109 +1,175 @@
 import os
+import json
+import random
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+import numpy as np
+from torch.utils.data import DataLoader, random_split
 
 from torchvision.models import (
-    resnet18, ResNet18_Weights, 
-    mobilenet_v3_small, MobileNet_V3_Small_Weights, 
-    efficientnet_b0, EfficientNet_B0_Weights
+    resnet18,           ResNet18_Weights,
+    mobilenet_v3_small, MobileNet_V3_Small_Weights,
+    efficientnet_b0,    EfficientNet_B0_Weights,
+    densenet121,        DenseNet121_Weights,
 )
 
-from utils.dataset import XRayDataset
+from utils.dataset   import XRayDataset
 from utils.transforms import train_transform, val_transform
-from utils.bagging import create_bootstrap
-from utils.train import train_model
-from utils.evaluate import get_model_weight, evaluate
-from utils.save import save_model, save_metrics, save_predictions
+from utils.bagging   import create_bootstrap
+from utils.train     import train_model
+from utils.evaluate  import get_model_weight, evaluate
+from utils.save      import save_model, save_metrics, save_predictions
 
-# --------------------
-# 1. Global Setup
-# --------------------
 NUM_CLASSES = 3
 
+# ── Reproducibility ────────────────────────────────────────────────────────────
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
+    torch.backends.cudnn.deterministic = True   # fully deterministic CUDA ops
+    torch.backends.cudnn.benchmark     = False  # disable auto-tuning for reproducibility
+
+
+# ── Directory creation ─────────────────────────────────────────────────────────
 def create_dirs():
-    for d in ["outputs/models", "outputs/logs", "outputs/metrics", "outputs/predictions"]:
+    for d in ["outputs/models", "outputs/logs",
+              "outputs/metrics", "outputs/predictions", "outputs/gradcam"]:
         os.makedirs(d, exist_ok=True)
+
+
+# ── Helper: freeze all backbone parameters ─────────────────────────────────────
+def freeze(model):
+    for p in model.parameters():
+        p.requires_grad = False
+
+
+# ── Model factory functions ────────────────────────────────────────────────────
 
 def get_resnet():
     m = resnet18(weights=ResNet18_Weights.DEFAULT)
+    freeze(m)
     m.fc = nn.Linear(m.fc.in_features, NUM_CLASSES)
     return m
 
+
 def get_mobilenet():
     m = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
+    freeze(m)
     m.classifier[3] = nn.Linear(m.classifier[3].in_features, NUM_CLASSES)
     return m
 
+
 def get_efficientnet():
     m = efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT)
+    freeze(m)
     m.classifier[1] = nn.Linear(m.classifier[1].in_features, NUM_CLASSES)
     return m
 
-# --------------------
-# 2. Main Execution Block
-# --------------------
+
+def get_densenet():
+    m = densenet121(weights=DenseNet121_Weights.DEFAULT)
+    freeze(m)
+    m.classifier = nn.Linear(m.classifier.in_features, NUM_CLASSES)
+    return m
+
+
+# VGG-16 removed: 138M params, no skip connections — overfits on medical datasets
+# with minimal diversity gain over the 4 remaining architectures.
+
+
+# ── Main pipeline ──────────────────────────────────────────────────────────────
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Executing on: {device}")
+    print(f"Device: {device}\n")
 
     create_dirs()
 
-    print("\nLoading datasets...")
+    # ── Datasets ───────────────────────────────────────────────────────────────
     train_dataset = XRayDataset("data/train", train_transform)
-    val_dataset   = XRayDataset("data/val", val_transform)
-    test_dataset  = XRayDataset("data/test", val_transform)
+    val_dataset   = XRayDataset("data/val",   val_transform)
+    test_dataset  = XRayDataset("data/test",  val_transform)
 
-    # Note: num_workers=4 will now work perfectly on Windows
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=4, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=4, pin_memory=True)
+    class_names = test_dataset.classes
+    print(f"Classes  : {class_names}")
+    print(f"Train    : {len(train_dataset)} images")
+    print(f"Val      : {len(val_dataset)} images")
+    print(f"Test     : {len(test_dataset)} images\n")
 
-    print("\nBootstrapping training datasets...")
-    boot1 = create_bootstrap(train_dataset)
-    boot2 = create_bootstrap(train_dataset)
-    boot3 = create_bootstrap(train_dataset)
+    # ── Split val → val_model (training signal) + val_ensemble (weight estimation)
+    # This avoids data leakage when computing ensemble weights.
+    n_ens   = max(1, int(0.3 * len(val_dataset)))
+    n_model = len(val_dataset) - n_ens
+    g = torch.Generator().manual_seed(SEED)
+    val_model_ds, val_ens_ds = random_split(val_dataset, [n_model, n_ens], generator=g)
 
-    loader1 = DataLoader(boot1, batch_size=16, shuffle=True, num_workers=4, pin_memory=True)
-    loader2 = DataLoader(boot2, batch_size=16, shuffle=True, num_workers=4, pin_memory=True)
-    loader3 = DataLoader(boot3, batch_size=16, shuffle=True, num_workers=4, pin_memory=True)
+    # ── DataLoaders ────────────────────────────────────────────────────────────
+    # num_workers=0  → safest on Windows (avoids multiprocessing spawn issues)
+    # pin_memory=True → faster CPU→GPU transfer when CUDA is available
+    pin = torch.cuda.is_available()
+
+    val_loader     = DataLoader(val_model_ds, batch_size=16, shuffle=False,
+                                 num_workers=0, pin_memory=pin)
+    val_ens_loader = DataLoader(val_ens_ds,   batch_size=16, shuffle=False,
+                                 num_workers=0, pin_memory=pin)
+    test_loader    = DataLoader(test_dataset,  batch_size=16, shuffle=False,
+                                 num_workers=0, pin_memory=pin)
+
+    # ── Bootstrap bags (one per model) ────────────────────────────────────────
+    loaders = [
+        DataLoader(create_bootstrap(train_dataset), batch_size=16,
+                   shuffle=True, num_workers=0, pin_memory=pin)
+        for _ in range(4)
+    ]
 
     log_file = "outputs/logs/training_log.txt"
 
-    print("\n--- Training Model 1: ResNet18 ---")
-    model1 = train_model(get_resnet(), loader1, val_loader, device, epochs=10, log_file=log_file)
-    save_model(model1, "resnet")
+    # ── Train all 4 models ────────────────────────────────────────────────────
+    print("=" * 60)
+    print("TRAINING")
+    print("=" * 60)
+    models = [
+        train_model(get_resnet(),       loaders[0], val_loader, device, log_file=log_file),
+        train_model(get_mobilenet(),    loaders[1], val_loader, device, log_file=log_file),
+        train_model(get_efficientnet(), loaders[2], val_loader, device, log_file=log_file),
+        train_model(get_densenet(),     loaders[3], val_loader, device, log_file=log_file),
+    ]
 
-    print("\n--- Training Model 2: MobileNetV3 ---")
-    model2 = train_model(get_mobilenet(), loader2, val_loader, device, epochs=10, log_file=log_file)
-    save_model(model2, "mobilenet")
+    names = ["resnet", "mobilenet", "efficientnet", "densenet"]
 
-    print("\n--- Training Model 3: EfficientNetB0 ---")
-    model3 = train_model(get_efficientnet(), loader3, val_loader, device, epochs=10, log_file=log_file)
-    save_model(model3, "efficientnet")
+    # ── Save trained models ────────────────────────────────────────────────────
+    print("\nSaving models...")
+    for m, n in zip(models, names):
+        save_model(m, n)
 
-    models_list = [model1, model2, model3]
+    # ── Ensemble weights (computed on held-out val_ens, not the training val) ──
+    print("\nComputing ensemble weights on held-out val split...")
+    raw_weights = [get_model_weight(m, val_ens_loader, device) for m in models]
+    total       = sum(raw_weights)
+    weights     = [w / total for w in raw_weights]
 
-    print("\nCalculating ensemble weights based on validation performance...")
-    w1 = get_model_weight(model1, val_loader, device)
-    w2 = get_model_weight(model2, val_loader, device)
-    w3 = get_model_weight(model3, val_loader, device)
+    for n, w, rw in zip(names, weights, raw_weights):
+        print(f"  {n:<14} raw_acc={rw:.4f}  weight={w:.4f}")
 
-    total = w1 + w2 + w3
-    weights = [w1/total, w2/total, w3/total]
+    # ── Evaluate ensemble on test set ─────────────────────────────────────────
+    print("\n" + "=" * 60)
+    print("EVALUATION")
+    print("=" * 60)
+    report, preds = evaluate(models, weights, test_loader, device, class_names)
 
-    print(f"Final Ensemble Weights: ResNet={weights[0]:.3f}, MobileNet={weights[1]:.3f}, EfficientNet={weights[2]:.3f}")
-
-    print("\nRunning final evaluation on isolated test set...")
-    report, preds = evaluate(models_list, weights, test_loader, device)
-
+    # ── Persist results ────────────────────────────────────────────────────────
     save_metrics(report, "results")
-    save_predictions(preds, "predictions")
+    save_predictions(preds, "predictions", class_names=class_names)
 
-    print("\nPipeline complete. Results saved in outputs/")
+    weights_dict = dict(zip(names, weights))
+    with open("outputs/metrics/ensemble_weights.json", "w") as f:
+        json.dump(weights_dict, f, indent=2)
+    print("  Ensemble weights saved → outputs/metrics/ensemble_weights.json")
+
+    print("\n✓ DONE")
 
 
-# --------------------
-# 3. The Windows Multiprocessing Shield
-# --------------------
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

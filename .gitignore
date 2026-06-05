@@ -1,19 +1,63 @@
-# Python
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
 
-# Virtual env
+# ── Virtual environments ──────────────────────────────────────────────────────
 myenv/
 venv/
+env/
+.venv/
 
-# Data & outputs
-data/
-outputs/
-models/
+# ── Dataset (too large for git — download separately via instructions) ────────
+data/train/
+data/val/
+data/test/
+# Keep the empty placeholder dirs tracked
+!data/train/.gitkeep
+!data/val/.gitkeep
+!data/test/.gitkeep
 
-# VS Code junk
+# ── Training outputs (models are large binary files) ─────────────────────────
+outputs/models/*.pth
+outputs/logs/*.txt
+outputs/metrics/*.json
+outputs/metrics/*.png
+outputs/predictions/*.csv
+outputs/gradcam/*.png
+# Keep the empty placeholder dirs tracked
+!outputs/models/.gitkeep
+!outputs/logs/.gitkeep
+!outputs/metrics/.gitkeep
+!outputs/predictions/.gitkeep
+!outputs/gradcam/.gitkeep
+
+# ── Web app runtime files (generated per-request, not source) ─────────────────
+static/uploads/*
+static/gradcam/*
+!static/uploads/.gitkeep
+!static/gradcam/.gitkeep
+
+# ── Stale / old copies ────────────────────────────────────────────────────────
+previous/
+
+# ── IDE & editor ─────────────────────────────────────────────────────────────
 .vscode/
+.idea/
+*.swp
+*.swo
 tempCodeRunnerFile.py
 
-# OS files
+# ── OS files ─────────────────────────────────────────────────────────────────
 .DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Misc ─────────────────────────────────────────────────────────────────────
+*.log
+gantt chart.png
